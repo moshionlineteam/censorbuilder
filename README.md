@@ -12,6 +12,6 @@ we don't need multiple languages (for now), want a 'json' file instead of langua
 ```
 result :
 
-``php
+```php
 Array ( [orig] => i love d111iickkkss lol [clean] => i love **********ss lol [matched] => Array ( [0] => d111iickkk ) ) 
 ```
