@@ -4,63 +4,69 @@ namespace Snipe\BanBuilder;
 
 class CensorWords
 {
-    public $badwords;
+    public $badwords = [];
     private $censorChecks = null;
     private $whiteList = [];
     private $whiteListPlaceHolder = ' {whiteList[i]} ';
-    private $replacer;
+    private $replacer = '*';
+    private $jsonPath = null;
 
-    public function __construct()
-    {
-        $this->badwords = [];
-        $this->replacer = '*';
-        $this->setDictionary('en-us');
+public function __construct($jsonPath = null)
+{
+    if ($jsonPath !== null) {
+        $this->jsonPath = $jsonPath;
+        $this->loadMainJson($this->jsonPath);
+    }
+}
+
+public function json(string $path): self
+{
+    $this->jsonPath = $path;
+    $this->loadMainJson($this->jsonPath);
+    return $this;
+}
+
+private function loadMainJson(?string $jsonPath = null): void
+{
+    if ($this->jsonPath !== null && $jsonPath === null) {
+        $jsonPath = $this->jsonPath;
     }
 
-    public function setDictionary($dictionary)
-    {
-        $this->badwords = $this->readBadWords($dictionary);
+    if ($jsonPath === null) {
+        $jsonPath = $this->getProjectRoot() . '/config/censor.json';
     }
 
-    public function addDictionary($dictionary)
-    {
-        $this->badwords = array_merge($this->badwords, $this->readBadWords($dictionary));
+    $jsonPath = realpath($jsonPath);
+    if ($jsonPath === false || !file_exists($jsonPath)) {
+        throw new \RuntimeException('Missing censor.json file at: ' . ($jsonPath ?: 'unknown path'));
     }
 
-    public function addFromArray($words)
-    {
-        $badwords       = array_merge($this->badwords, $words);
-        $this->badwords = array_keys(array_count_values($badwords));
+    $data = json_decode(file_get_contents($jsonPath), true);
+    if (!is_array($data)) {
+        throw new \RuntimeException('Invalid censor.json format');
     }
 
-    private function readBadWords($dictionary)
+    $this->badwords = array_values(array_unique(array_filter($data)));
+}
+
+private function getProjectRoot(): string
+{
+    $dir = __DIR__;
+    while (!file_exists($dir . '/composer.json') && dirname($dir) !== $dir) {
+        $dir = dirname($dir);
+    }
+    return $dir;
+}
+
+    public function addFromArray(array $words)
     {
-        $badwords     = [];
-        $baseDictPath = __DIR__ . DIRECTORY_SEPARATOR . 'dict' . DIRECTORY_SEPARATOR;
-
-        if (is_array($dictionary)) {
-            foreach ($dictionary as $dictionary_file) {
-                $badwords = array_merge($badwords, $this->readBadWords($dictionary_file));
-            }
-        }
-
-        if (is_string($dictionary)) {
-            if (file_exists($baseDictPath . $dictionary . '.php')) {
-                include $baseDictPath . $dictionary . '.php';
-            } elseif (file_exists($dictionary)) {
-                include $dictionary;
-            } else {
-                throw new \RuntimeException('Dictionary file not found: ' . $dictionary);
-            }
-        }
-
-        return array_keys(array_count_values($badwords));
+        $this->badwords = array_values(array_unique(array_merge($this->badwords, $words)));
     }
 
     public function addWhiteList(array $list)
     {
         foreach ($list as $value) {
-            if (is_string($value) && !empty($value)) {
+            if (is_string($value) && $value !== '') {
                 $this->whiteList[]['word'] = $value;
             }
         }
@@ -70,15 +76,13 @@ class CensorWords
     {
         foreach ($this->whiteList as $key => $list) {
             if ($reverse && !empty($this->whiteList[$key]['placeHolder'])) {
-                $placeHolder = $this->whiteList[$key]['placeHolder'];
-                $string      = str_replace($placeHolder, $list['word'], $string);
+                $string = str_replace($this->whiteList[$key]['placeHolder'], $list['word'], $string);
             } else {
-                $placeHolder                          = str_replace('[i]', $key, $this->whiteListPlaceHolder);
+                $placeHolder = str_replace('[i]', $key, $this->whiteListPlaceHolder);
                 $this->whiteList[$key]['placeHolder'] = $placeHolder;
-                $string                               = str_replace($list['word'], $placeHolder, $string);
+                $string = str_replace($list['word'], $placeHolder, $string);
             }
         }
-
         return $string;
     }
 
@@ -87,115 +91,112 @@ class CensorWords
         $this->replacer = $replacer;
     }
 
-    public function randCensor($chars, $len)
+    private function expandWordToFlexibleRegex(string $word): string
     {
-        return str_shuffle(
-            str_repeat($chars, (int)($len / strlen($chars))) .
-            substr($chars, 0, $len % strlen($chars))
-        );
+        $pattern = '';
+        $letters = str_split($word);
+
+        foreach ($letters as $char) {
+            $escaped = preg_quote($char, '/');
+            $pattern .= '(' . $escaped . '+)';
+        }
+
+        return $pattern;
     }
 
+private function generateCensorChecks($fullWords = false)
+{
+    $leet_replace = [
+        'a' => '(a|a\.|a\-|4|@|Á|á|À|Â|à|Â|â|Ä|ä|Ã|ã|Å|å|α|Δ|Λ|λ)',
+        'b' => '(b|b\.|b\-|8|\|3|ß|Β|β)',
+        'c' => '(c|c\.|c\-|Ç|ç|¢|€|<|\(|{|©)',
+        'd' => '(d|d\.|d\-|&part;|\|\)|Þ|þ|Ð|ð)',
+        'e' => '(e|e\.|e\-|3|€|È|è|É|é|Ê|ê|∑)',
+        'f' => '(f|f\.|f\-|ƒ)',
+        'g' => '(q|g|g\.|g\-|6|9)',
+        'h' => '(h|h\.|h\-|Η)',
+        'i' => '(i|i\.|i\-|!|\||\]\[|]|1|∫|Ì|Í|Î|Ï|ì|í|î|ï)',
+        'j' => '(j|j\.|j\-)',
+        'k' => '(k|k\.|k\-|Κ|κ)',
+        'l' => '(l|1\.|l\-|!|\||\]\[|]|£|∫|Ì|Í|Î|Ï)',
+        'm' => '(m|m\.|m\-)',
+        'n' => '(n|n\.|n\-|η|Ν|Π)',
+        'o' => '(o|o\.|o\-|0|Ο|ο|Φ|¤|°|ø)',
+        'p' => '(p|p\.|p\-|ρ|Ρ|¶|þ)',
+        'q' => '(g|q|q\.|q\-)',
+        'r' => '(r|r\.|r\-|®)',
+        's' => '(s|s\.|s\-|5|\$|§)',
+        't' => '(t|t\.|t\-|Τ|τ|7)',
+        'u' => '(u|u\.|u\-|υ|µ)',
+        'v' => '(v|v\.|v\-|υ|ν)',
+        'w' => '(w|w\.|w\-|ω|ψ|Ψ)',
+        'x' => '(x|x\.|x\-|Χ|χ)',
+        'y' => '(y|y\.|y\-|¥|γ|ÿ|ý|Ÿ|Ý)',
+        'z' => '(z|z\.|z\-|Ζ)',
+    ];
 
-    private function normalizeCustomPattern(string $word): string
-    {
-        if (strpos($word, '*') !== false || strpos($word, '+') !== false) {
+    $censorChecks = [];
 
-            $word = preg_replace_callback('/([a-z])\*([a-z])/i', function ($m) {
-                return $m[1] . '[^' . $m[2] . ']*' . $m[2];
-            }, $word);
+    foreach ($this->badwords as $word) {
+        $word = trim($word);
+        if (preg_match('/[()\[\]\+\*\|]/', $word)) {
+            $pattern = '/' . $word . '/i';
+        } else {
+            $flexPattern = $this->expandWordToFlexibleRegex($word);
+            $pattern = str_ireplace(array_keys($leet_replace), array_values($leet_replace), $flexPattern);
+            $pattern = $fullWords ? '/\b' . $pattern . '\b/i' : '/' . $pattern . '/i';
+        }
 
-            while (preg_match('/([a-z])\*([a-z])/i', $word)) {
-                $word = preg_replace_callback('/([a-z])\*([a-z])/i', function ($m) {
-                    return $m[1] . '[^' . $m[2] . ']*' . $m[2];
-                }, $word);
+        $censorChecks[] = $pattern;
+    }
+
+    $this->censorChecks = $censorChecks;
+}
+
+public function censorString($string, $fullWords = false)
+{
+    if (!$this->censorChecks) {
+        $this->generateCensorChecks($fullWords);
+    }
+
+    $original = html_entity_decode($string);
+    $matches = [];
+
+    $sanitized = preg_replace('/[^a-z0-9 _-]+/i', '', strtolower($original));
+    $clean = $original;
+
+    foreach ($this->censorChecks as $pattern) {
+        $pattern = trim($pattern);
+        $pattern = preg_replace('/^\/|\/[a-z-]*$/i', '', $pattern);
+
+        if (preg_match_all('/' . $pattern . '/i', $sanitized, $found)) {
+            foreach ($found[0] as $match) {
+                $matches[] = $match;
+
+                
+                $loosePattern = '/' . preg_replace(
+                    '/([a-z0-9])/i',
+                    '$1[^a-z0-9 ]{0,26}',
+                    $match
+                ) . '/i';
+
+
+                $clean = preg_replace_callback(
+                    $loosePattern,
+                    function ($m) {
+                        return str_repeat($this->replacer, strlen($m[0]));
+                    },
+                    $clean
+                );
             }
-
-            $word = preg_replace('/([a-z])\+/', '$1(?!$1)', $word);
         }
-
-        return $word;
     }
 
-    private function generateCensorChecks($fullWords = false)
-    {
-        $badwords = $this->badwords;
+    return [
+        'orig' => $string,
+        'clean' => $clean,
+        'matched' => array_unique($matches),
+    ];
+}
 
-        $leet_replace = [
-            'a' => '(a|a\.|a\-|4|@|Á|á|À|Â|à|Â|â|Ä|ä|Ã|ã|Å|å|α|Δ|Λ|λ)',
-            'b' => '(b|b\.|b\-|8|\|3|ß|Β|β)',
-            'c' => '(c|c\.|c\-|Ç|ç|¢|€|<|\(|{|©)',
-            'd' => '(d|d\.|d\-|&part;|\|\)|Þ|þ|Ð|ð)',
-            'e' => '(e|e\.|e\-|3|€|È|è|É|é|Ê|ê|∑)',
-            'f' => '(f|f\.|f\-|ƒ)',
-            'g' => '(q|g|g\.|g\-|6|9)',
-            'h' => '(h|h\.|h\-|Η)',
-            'i' => '(i|i\.|i\-|!|\||\]\[|]|1|∫|Ì|Í|Î|Ï|ì|í|î|ï)',
-            'j' => '(j|j\.|j\-)',
-            'k' => '(k|k\.|k\-|Κ|κ)',
-            'l' => '(l|1\.|l\-|!|\||\]\[|]|£|∫|Ì|Í|Î|Ï)',
-            'm' => '(m|m\.|m\-)',
-            'n' => '(n|n\.|n\-|η|Ν|Π)',
-            'o' => '(o|o\.|o\-|0|Ο|ο|Φ|¤|°|ø)',
-            'p' => '(p|p\.|p\-|ρ|Ρ|¶|þ)',
-            'q' => '(g|q|q\.|q\-)',
-            'r' => '(r|r\.|r\-|®)',
-            's' => '(s|s\.|s\-|5|\$|§)',
-            't' => '(t|t\.|t\-|Τ|τ|7)',
-            'u' => '(u|u\.|u\-|υ|µ)',
-            'v' => '(v|v\.|v\-|υ|ν)',
-            'w' => '(w|w\.|w\-|ω|ψ|Ψ)',
-            'x' => '(x|x\.|x\-|Χ|χ)',
-            'y' => '(y|y\.|y\-|¥|γ|ÿ|ý|Ÿ|Ý)',
-            'z' => '(z|z\.|z\-|Ζ)',
-        ];
-
-        $censorChecks = [];
-        foreach ($badwords as $word) {
-            $wordPattern = $this->normalizeCustomPattern($word);
-
-            // If it looks like a regex pattern, skip leet replacement
-            if (preg_match('/[()[\]^$|]/', $wordPattern)) {
-                $pattern = $wordPattern;
-            } else {
-                $pattern = str_ireplace(array_keys($leet_replace), array_values($leet_replace), $wordPattern);
-            }
-
-            $censorChecks[] = $fullWords
-                ? '/\b' . $pattern . '\b/i'
-                : '/' . $pattern . '/i';
-        }
-
-        $this->censorChecks = $censorChecks;
-    }
-
-    public function censorString($string, $fullWords = false)
-    {
-        if (!$this->censorChecks) {
-            $this->generateCensorChecks($fullWords);
-        }
-
-        $anThis            = &$this;
-        $counter           = 0;
-        $match             = [];
-        $newstring         = [];
-        $newstring['orig'] = html_entity_decode($string);
-        $original          = $this->replaceWhiteListed($newstring['orig']);
-
-        $newstring['clean'] = preg_replace_callback(
-            $this->censorChecks,
-            function ($matches) use (&$anThis, &$counter, &$match) {
-                $match[$counter++] = $matches[0];
-
-                return (strlen($anThis->replacer) === 1)
-                    ? str_repeat($anThis->replacer, strlen($matches[0]))
-                    : $anThis->randCensor($anThis->replacer, strlen($matches[0]));
-            },
-            $original
-        );
-
-        $newstring['clean']   = $this->replaceWhiteListed($newstring['clean'], true);
-        $newstring['matched'] = $match;
-
-        return $newstring;
-    }
 }
